@@ -1,12 +1,5 @@
 # VERSION 0.8.2
 
-# UPDATE THESE VARIABLES WITH YOUR CONFIG
-
-HOME_ASSISTANT_URL = 'https://yourinstall.com'  # REPLACE WITH THE URL FOR YOUR HOME ASSISTANT
-VERIFY_SSL = True  # SET TO FALSE IF YOU DO NOT HAVE VALID CERTS
-TOKEN = ''  # ADD YOUR LONG LIVED TOKEN IF NEEDED OTHERWISE LEAVE BLANK
-DEBUG = False  # SET TO TRUE IF YOU WANT TO SEE MORE DETAILS IN THE LOGS
-
 """ NO NEED TO EDIT ANYTHING UNDER THE LINE """
 import sys
 import logging
@@ -14,6 +7,7 @@ import urllib3
 import json
 import isodate
 import prompts
+from config import *
 from typing import Union, Optional
 from urllib3 import HTTPResponse
 
@@ -147,19 +141,21 @@ class HomeAssistant(Borg):
             logger.debug(self.ha_state)
             return
 
+        response_json = json.loads(decoded_response)
         self.ha_state = {
             "error": False,
-            "event_id": json.loads(decoded_response).get('event'),
-            "text": json.loads(decoded_response).get('text')
+            "event_id": response_json.get('event'),
+            "text": response_json.get('text'),
+            "response_text": response_json.get('response_text')
         }
         logger.debug(self.ha_state)
 
-    def post_ha_event(self, response: str, response_type: str, **kwargs) -> str:
+    def post_ha_event(self, event_response: str, event_response_type: str, **kwargs) -> str:
         """
             Posts an event to the Home Assistant server.
 
-            :param response: The response to send to the Home Assistant server.
-            :param response_type: The type of response to send to the Home Assistant server.
+            :param event_response: The response to send to the Home Assistant server.
+            :param event_response_type: The type of response to send to the Home Assistant server.
             :param kwargs: Additional parameters to send to the Home Assistant server.
             :return: The text to speak to the user.
         """
@@ -171,8 +167,8 @@ class HomeAssistant(Borg):
 
         request_body = {
             "event_id": self.ha_state.get('event_id'),
-            "event_response": response,
-            "event_response_type": response_type
+            "event_response": event_response,
+            "event_response_type": event_response_type
         }
         request_body.update(kwargs)
 
@@ -180,7 +176,7 @@ class HomeAssistant(Borg):
             person_id = self.handler_input.request_envelope.context.system.person.person_id
             request_body['event_person_id'] = person_id
 
-        response = http.request(
+        http_response = http.request(
             'POST',
             f'{HOME_ASSISTANT_URL}/api/events/alexa_actionable_notification',
             headers={
@@ -190,11 +186,16 @@ class HomeAssistant(Borg):
             body=json.dumps(request_body).encode('utf-8')
         )
 
-        error: Union[bool, str] = self._check_response_errors(response)
+        error: Union[bool, str] = self._check_response_errors(http_response)
         if error:
             return error
 
-        speak_output: str = self.language_strings[prompts.OKAY]
+        speak_output: str = self.ha_state.get('response_text') or ""
+        if speak_output:
+            speak_output = speak_output.replace("<response>", event_response)
+        else:
+            speak_output = self.language_strings[prompts.OKAY]
+
         self.clear_state()
         return speak_output
 
@@ -304,7 +305,7 @@ class NumericIntentHandler(AbstractRequestHandler):
 
 class StringIntentHandler(AbstractRequestHandler):
     """Handler for String Intent."""
-    
+
     def can_handle(self, handler_input):
         """Check for Select Intent."""
         return is_intent_name('String')(handler_input)
@@ -527,10 +528,10 @@ class LocalizationInterceptor(AbstractRequestInterceptor):
         handler_input.attributes_manager.request_attributes["_"] = data
 
 
-""" 
+"""
     The SkillBuilder object acts as the entry point for your skill, routing all request and response
     payloads to the handlers above. Make sure any new handlers or interceptors you've
-    defined are included below. 
+    defined are included below.
     The order matters - they're processed top to bottom.
 """
 
