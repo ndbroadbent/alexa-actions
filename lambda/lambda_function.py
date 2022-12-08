@@ -62,7 +62,7 @@ class HomeAssistant(Borg):
         if handler_input:
             self.handler_input = handler_input
 
-        # Gets data from langua_strings.json file according to the locale
+        # Gets data from language_strings.json file according to the locale
         self.language_strings = self.handler_input.attributes_manager.request_attributes["_"]
 
         self.token = self._fetch_token() if TOKEN == "" else TOKEN
@@ -146,6 +146,7 @@ class HomeAssistant(Borg):
             "error": False,
             "event_id": response_json.get('event'),
             "text": response_json.get('text'),
+            "confirmation_text": response_json.get('confirmation_text'),
             "response_text": response_json.get('response_text')
         }
         logger.debug(self.ha_state)
@@ -239,7 +240,7 @@ class LaunchRequestHandler(AbstractRequestHandler):
             )
 
 
-class YesIntentHanlder(AbstractRequestHandler):
+class YesIntentHandler(AbstractRequestHandler):
     """Handler for Yes Intent."""
 
     def can_handle(self, handler_input):
@@ -250,7 +251,15 @@ class YesIntentHanlder(AbstractRequestHandler):
         """Handle Yes Intent."""
         logger.info('Yes Intent Handler triggered')
         ha_obj = HomeAssistant(handler_input)
-        speak_output = ha_obj.post_ha_event(RESPONSE_YES, RESPONSE_YES)
+
+        # Check if we are confirming a response
+        session_attr = handler_input.attributes_manager.session_attributes
+        if session_attr.get('unconfirmedResponse'):
+            strings = session_attr.get('unconfirmedResponse')
+            logger.debug(f'Confirmed String: {strings}')
+            speak_output = ha_obj.post_ha_event(strings, RESPONSE_STRING)
+        else:
+            speak_output = ha_obj.post_ha_event(RESPONSE_YES, RESPONSE_YES)
 
         return (
             handler_input.response_builder
@@ -259,7 +268,7 @@ class YesIntentHanlder(AbstractRequestHandler):
         )
 
 
-class NoIntentHanlder(AbstractRequestHandler):
+class NoIntentHandler(AbstractRequestHandler):
     """Handler for No Intent."""
 
     def can_handle(self, handler_input):
@@ -270,6 +279,30 @@ class NoIntentHanlder(AbstractRequestHandler):
         """Handle No Intent."""
         logger.info('No Intent Handler triggered')
         ha_obj = HomeAssistant(handler_input)
+
+        # If the user rejects the confirmation, then restart from the beginning
+        session_attr = handler_input.attributes_manager.session_attributes
+        if session_attr.get('unconfirmedResponse'):
+            session_attr["unconfirmedResponse"] = None
+            speak_output: Optional[str] = ha_obj.ha_state['text']
+            speak_output = f"{ha_obj.language_strings[prompts.OKAY]}. {speak_output}"
+            event_id: Optional[str] = ha_obj.ha_state['event_id']
+
+            if event_id:
+                return (
+                    handler_input.response_builder
+                        .speak(speak_output)
+                        .ask('')
+                        .response
+                )
+            else:
+                ha_obj.clear_state()
+                return (
+                    handler_input.response_builder
+                        .speak(speak_output)
+                        .response
+                )
+
         speak_output = ha_obj.post_ha_event(RESPONSE_NO, RESPONSE_NO)
 
         return (
@@ -316,6 +349,20 @@ class StringIntentHandler(AbstractRequestHandler):
         ha_obj = HomeAssistant(handler_input)
         strings = get_slot_value(handler_input, 'Strings')
         logger.debug(f'String: {strings}')
+
+        if ha_obj.ha_state and ha_obj.ha_state.get('confirmation_text'):
+            speak_output: str = ha_obj.ha_state['confirmation_text'] or ""
+            speak_output = speak_output.replace("<response>", strings)
+
+            session_attr = handler_input.attributes_manager.session_attributes
+            session_attr["unconfirmedResponse"] = strings
+
+            return (
+                handler_input.response_builder
+                    .speak(speak_output)
+                    .ask('')
+                    .response
+            )
 
         speak_output = ha_obj.post_ha_event(strings, RESPONSE_STRING)
 
@@ -539,8 +586,8 @@ sb = SkillBuilder()
 
 # register request / intent handlers
 sb.add_request_handler(LaunchRequestHandler())
-sb.add_request_handler(YesIntentHanlder())
-sb.add_request_handler(NoIntentHanlder())
+sb.add_request_handler(YesIntentHandler())
+sb.add_request_handler(NoIntentHandler())
 sb.add_request_handler(StringIntentHandler())
 sb.add_request_handler(SelectIntentHandler())
 sb.add_request_handler(NumericIntentHandler())
